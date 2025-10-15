@@ -1,0 +1,8 @@
+[
+  {
+    "match": "**/*",
+    "headers": {
+      "Content-Security-Policy": "default-src 'self'; script-src 'self' 'unsafe-eval'; connect-src 'self' http://localhost:* https://icp0.io https://*.icp0.io https://icp-api.io https://ic-api.internetcomputer.org https://ic0.app; img-src 'self' data:; style-src 'self' 'unsafe-inline'; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none';"
+    }
+  }
+]

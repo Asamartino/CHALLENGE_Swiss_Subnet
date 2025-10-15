@@ -1,0 +1,27 @@
+{
+  "canisters": {
+    "swiss_subnet_backend": {
+      "main": "src/swiss_subnet_backend/main.mo",
+      "type": "motoko"
+    },
+    "swiss_subnet_frontend": {
+      "dependencies": [
+        "swiss_subnet_backend"
+      ],
+      "frontend": {
+        "entrypoint": "src/swiss_subnet_frontend/src/index.html"
+      },
+      "source": [
+        "dist/swiss_subnet_frontend/"
+      ],
+      "type": "assets"
+    }
+  },
+  "defaults": {
+    "build": {
+      "args": "",
+      "packtool": "mops sources"
+    }
+  },
+  "version": 1
+}
