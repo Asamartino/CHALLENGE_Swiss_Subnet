@@ -17,7 +17,7 @@ import Debug "mo:base/Debug";
 import Option "mo:base/Option";
 import Error "mo:base/Error";
 import Json "mo:json";
-import SHA256 "mo:sha256/SHA256";
+import SHA256 "mo:sha2/Sha256";
 
 persistent actor SubnetDashboard {
     // Type definitions
@@ -146,10 +146,10 @@ persistent actor SubnetDashboard {
                               ",gen1:" # Nat.toText(stats.totalGen1) #
                               ",gen2:" # Nat.toText(stats.totalGen2) #
                               ",updated:" # Int.toText(stats.lastUpdated);
-                SHA256.hash(Text.encodeUtf8(dataText))
+                SHA256.fromBlob(#sha256, Text.encodeUtf8(dataText))
             };
             case null {
-                SHA256.hash(Text.encodeUtf8("no-data"))
+                SHA256.fromBlob(#sha256, Text.encodeUtf8("no-data"))
             };
         }
     };
