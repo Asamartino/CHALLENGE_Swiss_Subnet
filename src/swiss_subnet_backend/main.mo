@@ -17,6 +17,7 @@ import Debug "mo:base/Debug";
 import Option "mo:base/Option";
 import Error "mo:base/Error";
 import Json "mo:json";
+import SHA256 "mo:sha256/SHA256";
 
 persistent actor SubnetDashboard {
     // Type definitions
@@ -136,7 +137,7 @@ persistent actor SubnetDashboard {
         http_request : CanisterHttpRequestArgs -> async HttpResponsePayload;
     } = actor("aaaaa-aa");
 
-    // Helper function to create certified data hash
+    // Helper function to create certified data hash (now properly returns a hash)
     private func createCertifiedDataHash() : Blob {
         switch (cachedStatsData) {
             case (?stats) {
@@ -145,10 +146,10 @@ persistent actor SubnetDashboard {
                               ",gen1:" # Nat.toText(stats.totalGen1) #
                               ",gen2:" # Nat.toText(stats.totalGen2) #
                               ",updated:" # Int.toText(stats.lastUpdated);
-                Text.encodeUtf8(dataText)
+                SHA256.hash(Text.encodeUtf8(dataText))
             };
             case null {
-                Text.encodeUtf8("no-data")
+                SHA256.hash(Text.encodeUtf8("no-data"))
             };
         }
     };
@@ -331,6 +332,44 @@ persistent actor SubnetDashboard {
         }
     };
 
+    // NEW CERTIFIED QUERY: Get certified stats with separate data and certificate
+    public query func getCertifiedStats() : async {
+        certificate: ?Blob;
+        data: ?NetworkStats;
+    } {
+        let stats = switch (cachedStatsData) {
+            case (?stats) { ?stats };
+            case null {
+                if (cachedSubnetsArray.size() == 0) {
+                    null
+                } else {
+                    var totalGen1 = 0;
+                    var totalGen2 = 0;
+                    var totalNodes = 0;
+                    
+                    for ((_, subnet) in cachedSubnetsArray.vals()) {
+                        totalGen1 += subnet.gen1Count;
+                        totalGen2 += subnet.gen2Count;
+                        totalNodes += subnet.nodeCount;
+                    };
+                    
+                    ?{
+                        totalSubnets = cachedSubnetsArray.size();
+                        totalNodes = totalNodes;
+                        totalGen1 = totalGen1;
+                        totalGen2 = totalGen2;
+                        lastUpdated = lastFetchTime;
+                    }
+                }
+            };
+        };
+        
+        {
+            certificate = CertifiedData.getCertificate();
+            data = stats;
+        }
+    };
+
     // CERTIFIED QUERY: Get all subnets
     public query func getSubnets() : async [SubnetInfo] {
         Array.map<(Text, SubnetInfo), SubnetInfo>(
@@ -359,7 +398,7 @@ persistent actor SubnetDashboard {
         createCertifiedDataHash()
     };
 
-    // Combined data fetch with certificate
+    // Combined data fetch with certificate (keep for backward compatibility)
     public query func getStatsWithCertificate() : async {
         stats: Result.Result<NetworkStats, Text>;
         certificate: ?Blob;
