@@ -3,6 +3,7 @@
   "version": "1.0.0",
   "description": "Decentralized ICP Subnet Dashboard",
   "scripts": {
+    
     "build": "cd src/swiss_subnet_frontend && VITE_CANISTER_ID_BACKEND=$CANISTER_ID_SWISS_SUBNET_BACKEND VITE_DFX_NETWORK=$DFX_NETWORK VITE_HOST=http://localhost:4943 npm run build",
     "copy:types": "rsync -avr .dfx/$(echo ${DFX_NETWORK:-local})/canisters/** --exclude='*.wasm' --exclude='*.most' --exclude='*.did' src/declarations",
     "start": "cd src/swiss_subnet_frontend && npm run dev",

@@ -14,7 +14,11 @@
       "source": [
         "dist/swiss_subnet_frontend/"
       ],
-      "type": "assets"
+      "type": "assets",
+      "declarations": {
+        "content_security_policy": "connect-src 'self' http://localhost:* https://icp0.io https://*.icp0.io https://icp-api.io https://ic0.app"
+      },
+      "build": "scripts/generate-env.sh && cd src/swiss_subnet_frontend && npm run build"
     }
   },
   "defaults": {

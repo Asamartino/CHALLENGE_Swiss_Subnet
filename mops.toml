@@ -1,4 +1,5 @@
 [dependencies]
 base = "0.16.0"
 json = "1.4.0"
+map = "9.0.1"
 sha2 = "0.1.9"

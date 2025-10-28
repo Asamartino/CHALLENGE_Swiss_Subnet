@@ -1,697 +1,260 @@
 import Array "mo:base/Array";
-import Blob "mo:base/Blob";
-import CertifiedData "mo:base/CertifiedData";
+import Buffer "mo:base/Buffer";
 import HashMap "mo:base/HashMap";
-import Hash "mo:base/Hash";
+import Int "mo:base/Int";
 import Iter "mo:base/Iter";
 import Nat "mo:base/Nat";
-import Nat32 "mo:base/Nat32";
-import Int "mo:base/Int";
-import Principal "mo:base/Principal";
+import Option "mo:base/Option";
 import Result "mo:base/Result";
 import Text "mo:base/Text";
 import Time "mo:base/Time";
-import Buffer "mo:base/Buffer";
-import Cycles "mo:base/ExperimentalCycles";
-import Debug "mo:base/Debug";
-import Option "mo:base/Option";
-import Error "mo:base/Error";
-import Json "mo:json";
-import SHA256 "mo:sha2/Sha256";
 
 persistent actor SubnetDashboard {
-    // Type definitions
-    public type NodeGeneration = {
-        #Gen1;
-        #Gen2;
-    };
-
+    
+    // ===========================
+    // TYPE DEFINITIONS
+    // ===========================
+    
     public type NodeInfo = {
         nodeId: Text;
-        generation: NodeGeneration;
-        dataCenter: ?Text;
-        nodeProvider: ?Text;
+        generation: Text;
+        nodeOperatorId: Text;
+        nodeProviderId: Text;
+        dcId: Text;
+        region: Text;
+        status: Text;
     };
 
     public type SubnetInfo = {
         subnetId: Text;
+        subnetType: Text;
         nodeCount: Nat;
         gen1Count: Nat;
         gen2Count: Nat;
+        unknownCount: Nat;
         nodes: [NodeInfo];
-        subnetType: ?Text;
     };
 
     public type NetworkStats = {
         totalSubnets: Nat;
         totalNodes: Nat;
-        totalGen1: Nat;
-        totalGen2: Nat;
+        gen1Nodes: Nat;
+        gen2Nodes: Nat;
+        unknownNodes: Nat;
         lastUpdated: Int;
     };
 
-    // HTTP Outcall types
-    public type HttpHeader = {
-        name: Text;
-        value: Text;
+    public type NodeFromFile = {
+        node_id: Text;
+        node_hardware_generation: Text;
+        node_operator_id: Text;
+        node_provider_id: Text;
+        dc_id: Text;
+        region: Text;
+        status: Text;
+        subnet_id: Text;
     };
 
-    public type HttpMethod = {
-        #get;
-        #post;
-        #head;
-    };
-
-    public type TransformRawResponse = {
-        status: Nat;
-        headers: [HttpHeader];
-        body: Blob;
-    };
-
-    public type HttpResponsePayload = {
-        status: Nat;
-        headers: [HttpHeader];
-        body: Blob;
-    };
-
-    public type TransformContext = {
-        function: shared query TransformRawResponse -> async HttpResponsePayload;
-        context: Blob;
-    };
-
-    public type CanisterHttpRequestArgs = {
-        url: Text;
-        max_response_bytes: ?Nat64;
-        headers: [HttpHeader];
-        body: ?Blob;
-        method: HttpMethod;
-        transform: ?TransformContext;
-    };
-
-    // HTTP Interface types
-    public type HeaderField = (Text, Text);
-
-    public type HttpRequest = {
-        method: Text;
-        url: Text;
-        headers: [HeaderField];
-        body: Blob;
-    };
-
-    public type HttpStreamingCallbackToken = {
-        key: Text;
-        content_encoding: Text;
-        index: Nat;
-    };
-
-    public type HttpStreamingCallbackResponse = {
-        body: Blob;
-        token: ?HttpStreamingCallbackToken;
-    };
-
-    public type HttpStreamingStrategy = {
-        #Callback: {
-            callback: shared query HttpStreamingCallbackToken -> async HttpStreamingCallbackResponse;
-            token: HttpStreamingCallbackToken;
-        };
-    };
-
-    public type HttpResponse = {
-        status_code: Nat16;
-        headers: [HeaderField];
-        body: Blob;
-        streaming_strategy: ?HttpStreamingStrategy;
-    };
-
-    // Persistent storage (automatically stable with persistent actor)
-    var cachedSubnetsArray : [(Text, SubnetInfo)] = [];
-    var lastFetchTime : Int = 0;
-    var cachedStatsData : ?NetworkStats = null;
-    var lastRefreshBy : ?Principal = null;
+    // ===========================
+    // STORAGE
+    // ===========================
     
-    // Rate limiting - 5 minutes cooldown
-    let REFRESH_COOLDOWN_NS : Int = 300_000_000_000;
-
-    // IC Management Canister interface (only HTTP outcalls)
-    let ic : actor {
-        http_request : CanisterHttpRequestArgs -> async HttpResponsePayload;
-    } = actor("aaaaa-aa");
-
-    // Helper function to create certified data hash (now properly returns a hash)
-    private func createCertifiedDataHash() : Blob {
-        switch (cachedStatsData) {
-            case (?stats) {
-                let dataText = "subnets:" # Nat.toText(stats.totalSubnets) # 
-                              ",nodes:" # Nat.toText(stats.totalNodes) #
-                              ",gen1:" # Nat.toText(stats.totalGen1) #
-                              ",gen2:" # Nat.toText(stats.totalGen2) #
-                              ",updated:" # Int.toText(stats.lastUpdated);
-                SHA256.fromBlob(#sha256, Text.encodeUtf8(dataText))
-            };
-            case null {
-                SHA256.fromBlob(#sha256, Text.encodeUtf8("no-data"))
-            };
-        }
+    private var subnetsStable : [(Text, SubnetInfo)] = [];
+    private var lastUpdatedStable : Int = 0;
+    private transient var subnets = HashMap.HashMap<Text, SubnetInfo>(10, Text.equal, Text.hash);
+    private var lastUpdated : Int = 0;
+    
+    // ===========================
+    // UPGRADE HOOKS
+    // ===========================
+    
+    system func preupgrade() {
+        subnetsStable := Iter.toArray(subnets.entries());
+        lastUpdatedStable := lastUpdated;
+    };
+    
+    system func postupgrade() {
+        for ((key, value) in subnetsStable.vals()) {
+            subnets.put(key, value);
+        };
+        lastUpdated := lastUpdatedStable;
+        subnetsStable := [];
     };
 
-    // Update certified data for tamper-proof verification
-    private func updateCertifiedData() {
-        let hash = createCertifiedDataHash();
-        CertifiedData.set(hash);
-    };
+    // ===========================
+    // HELPER FUNCTIONS
+    // ===========================
 
-    // Transform function for HTTP outcalls (strips headers for consensus)
-    public query func transform(raw: TransformRawResponse) : async HttpResponsePayload {
-        {
-            status = raw.status;
-            headers = [];
-            body = raw.body;
-        }
-    };
-
-    // Fetches the network topology from the IC Dashboard API
-    private func fetchOnChainTopology() : async Result.Result<[(Text, [Text])], Text> {
-        try {
-            Debug.print("Fetching topology from IC Dashboard API...");
-            
-            let url = "https://ic-api.internetcomputer.org/api/v3/subnets";
-            
-            let request : CanisterHttpRequestArgs = {
-                url = url;
-                max_response_bytes = ?2_000_000;
-                headers = [];
-                body = null;
-                method = #get;
-                transform = ?{
-                    function = transform;
-                    context = Blob.fromArray([]);
-                };
-            };
-            
-            let availableCycles = Cycles.balance();
-            if (availableCycles < 250_000_000_000) {
-                return #err("Insufficient cycles for HTTP outcall");
-            };
-            
-            let response = await (with cycles = 230_000_000_000) ic.http_request(request);
-            
-            if (response.status != 200) {
-                return #err("HTTP request failed with status: " # Nat.toText(response.status));
-            };
-
-            let bodyText = switch (Text.decodeUtf8(response.body)) {
-                case (?text) { text };
-                case null { return #err("Failed to decode response") };
-            };
-            
-            let buffer = Buffer.Buffer<(Text, [Text])>(50);
-            
-            switch (Json.parse(bodyText)) {
-                case (#Ok(json)) {
-                    let subnetsArrayOpt = switch (json) {
-                        case (#Object(obj)) { obj.get("subnets") };
-                        case _ { null };
-                    };
-
-                    switch (subnetsArrayOpt) {
-                        case (? #Array(subnets)) {
-                            for (subnetJson in subnets.vals()) {
-                                switch (subnetJson) {
-                                    case (#Object(subnetObj)) {
-                                        let subnetIdOpt = subnetObj.get("subnet_id");
-                                        let nodesOpt = subnetObj.get("nodes");
-
-                                        switch (subnetIdOpt, nodesOpt) {
-                                            case (? #Text(subnetId), ? #Array(nodes)) {
-                                                let nodeIds = Buffer.Buffer<Text>(nodes.size());
-                                                
-                                                for (nodeJson in nodes.vals()) {
-                                                    switch (nodeJson) {
-                                                        case (#Text(nodeId)) {
-                                                            nodeIds.add(nodeId);
-                                                        };
-                                                        case _ {};
-                                                    };
-                                                };
-                                                
-                                                buffer.add((subnetId, Buffer.toArray(nodeIds)));
-                                            };
-                                            case _ {};
-                                        };
-                                    };
-                                    case _ {};
-                                };
-                            };
-                        };
-                        case _ { return #err("Could not find 'subnets' array in JSON") };
-                    };
-                };
-                case (#Err(msg)) { return #err("Failed to parse JSON: " # msg) };
-            };
-            
-            Debug.print("Found " # Nat.toText(buffer.size()) # " subnets");
-            #ok(Buffer.toArray(buffer))
-        } catch (e) {
-            #err("Failed to fetch topology: " # Error.message(e))
-        }
-    };
-
-    // Fetch node hardware info for Gen1/Gen2 classification
-    public shared func fetchNodeHardwareInfo() : async Result.Result<Text, Text> {
-        try {            
-            let url = "https://ic-api.internetcomputer.org/api/v3/nodes";
-            
-            let request : CanisterHttpRequestArgs = {
-                url = url;
-                max_response_bytes = ?2_000_000;
-                headers = [];
-                body = null;
-                method = #get;
-                transform = ?{
-                    function = transform;
-                    context = Blob.fromArray([]);
-                };
-            };
-            
-            let availableCycles = Cycles.balance();
-            Debug.print("Available cycles: " # Nat.toText(availableCycles));
-            
-            if (availableCycles < 250_000_000_000) {
-                return #err("Insufficient cycles for HTTP outcall. Available: " # Nat.toText(availableCycles));
-            };
-            
-            let response = await (with cycles = 230_000_000_000) ic.http_request(request);
-            
-            if (response.status != 200) {
-                return #err("HTTP request failed with status: " # Nat.toText(response.status));
-            };
-
-            let bodyText = switch (Text.decodeUtf8(response.body)) {
-                case (?text) { text };
-                case null { return #err("Failed to decode response") };
-            };
-            
-            #ok(bodyText)
-        } catch (e) {
-            #err("Failed to fetch node info: " # Error.message(e))
-        }
-    };
-
-    // Helper function to detect Gen2 nodes
-    private func isGen2ChipId(chipId: Text) : Bool {
-        chipId == "amd_milan_g2" or
-        chipId == "amd_rome_g2" or
-        chipId == "amd_milan"
-    };
-
-    // CERTIFIED QUERY: Get network statistics
-    public query func getNetworkStats() : async Result.Result<NetworkStats, Text> {
-        switch (cachedStatsData) {
-            case (?stats) {
-                #ok(stats)
-            };
-            case null {
-                var totalGen1 = 0;
-                var totalGen2 = 0;
-                var totalNodes = 0;
-                
-                for ((_, subnet) in cachedSubnetsArray.vals()) {
-                    totalGen1 += subnet.gen1Count;
-                    totalGen2 += subnet.gen2Count;
-                    totalNodes += subnet.nodeCount;
-                };
-                
-                #ok({
-                    totalSubnets = cachedSubnetsArray.size();
-                    totalNodes = totalNodes;
-                    totalGen1 = totalGen1;
-                    totalGen2 = totalGen2;
-                    lastUpdated = lastFetchTime;
-                })
-            };
-        }
-    };
-
-    // NEW CERTIFIED QUERY: Get certified stats with separate data and certificate
-    public query func getCertifiedStats() : async {
-        certificate: ?Blob;
-        data: ?NetworkStats;
-    } {
-        let stats = switch (cachedStatsData) {
-            case (?stats) { ?stats };
-            case null {
-                if (cachedSubnetsArray.size() == 0) {
-                    null
-                } else {
-                    var totalGen1 = 0;
-                    var totalGen2 = 0;
-                    var totalNodes = 0;
-                    
-                    for ((_, subnet) in cachedSubnetsArray.vals()) {
-                        totalGen1 += subnet.gen1Count;
-                        totalGen2 += subnet.gen2Count;
-                        totalNodes += subnet.nodeCount;
-                    };
-                    
-                    ?{
-                        totalSubnets = cachedSubnetsArray.size();
-                        totalNodes = totalNodes;
-                        totalGen1 = totalGen1;
-                        totalGen2 = totalGen2;
-                        lastUpdated = lastFetchTime;
-                    }
-                }
-            };
+    private func calculateStats() : NetworkStats {
+        var totalNodes = 0;
+        var gen1Total = 0;
+        var gen2Total = 0;
+        var unknownTotal = 0;
+        
+        for (subnet in subnets.vals()) {
+            totalNodes += subnet.nodeCount;
+            gen1Total += subnet.gen1Count;
+            gen2Total += subnet.gen2Count;
+            unknownTotal += subnet.unknownCount;
         };
         
         {
-            certificate = CertifiedData.getCertificate();
-            data = stats;
+            totalSubnets = subnets.size();
+            totalNodes = totalNodes;
+            gen1Nodes = gen1Total;
+            gen2Nodes = gen2Total;
+            unknownNodes = unknownTotal;
+            lastUpdated = lastUpdated;
         }
     };
 
-    // CERTIFIED QUERY: Get all subnets
+    private func classifyNode(generation: Text) : Text {
+        if (generation == "Gen1") { "Gen1" }
+        else if (generation == "Gen2") { "Gen2" }
+        else { "Unknown" }
+    };
+
+    private func updateSubnetCounts(subnetId: Text) {
+        switch (subnets.get(subnetId)) {
+            case (?subnet) {
+                var gen1 = 0;
+                var gen2 = 0;
+                var unknown = 0;
+                
+                for (node in subnet.nodes.vals()) {
+                    switch (node.generation) {
+                        case ("Gen1") { gen1 += 1 };
+                        case ("Gen2") { gen2 += 1 };
+                        case (_) { unknown += 1 };
+                    };
+                };
+                
+                let updatedSubnet : SubnetInfo = {
+                    subnetId = subnet.subnetId;
+                    subnetType = subnet.subnetType;
+                    nodeCount = subnet.nodes.size();
+                    gen1Count = gen1;
+                    gen2Count = gen2;
+                    unknownCount = unknown;
+                    nodes = subnet.nodes;
+                };
+                
+                subnets.put(subnetId, updatedSubnet);
+            };
+            case null { };
+        };
+    };
+
+    // ===========================
+    // DATA MANAGEMENT
+    // ===========================
+
+    public shared func loadNodesFromFile(nodes: [NodeFromFile]) : async Result.Result<Text, Text> {
+        var processed = 0;
+        var created = 0;
+        
+        for (nodeData in nodes.vals()) {
+            let subnetId = nodeData.subnet_id;
+            
+            // Only process if subnet_id is not empty
+            if (subnetId != "") {
+                if (Option.isNull(subnets.get(subnetId))) {
+                    subnets.put(subnetId, {
+                        subnetId; 
+                        subnetType = "Application";
+                        nodeCount = 0; 
+                        gen1Count = 0; 
+                        gen2Count = 0;
+                        unknownCount = 0; 
+                        nodes = [];
+                    });
+                    created += 1;
+                };
+                
+                switch (subnets.get(subnetId)) {
+                    case (?subnet) {
+                        let nodesBuffer = Buffer.Buffer<NodeInfo>(subnet.nodes.size() + 1);
+                        for (node in subnet.nodes.vals()) { nodesBuffer.add(node) };
+                        
+                        nodesBuffer.add({
+                            nodeId = nodeData.node_id;
+                            generation = classifyNode(nodeData.node_hardware_generation);
+                            nodeOperatorId = nodeData.node_operator_id;
+                            nodeProviderId = nodeData.node_provider_id;
+                            dcId = nodeData.dc_id;
+                            region = nodeData.region;
+                            status = nodeData.status;
+                        });
+                        
+                        subnets.put(subnetId, {
+                            subnetId = subnet.subnetId;
+                            subnetType = subnet.subnetType;
+                            nodeCount = nodesBuffer.size();
+                            gen1Count = subnet.gen1Count;
+                            gen2Count = subnet.gen2Count;
+                            unknownCount = subnet.unknownCount;
+                            nodes = Buffer.toArray(nodesBuffer);
+                        });
+                        processed += 1;
+                    };
+                    case null { };
+                };
+            };
+        };
+        
+        // Update counts for all subnets
+        for (subnetId in subnets.keys()) {
+            updateSubnetCounts(subnetId);
+        };
+        
+        lastUpdated := Time.now();
+        
+        #ok("Successfully loaded " # Nat.toText(processed) # " nodes across " # Nat.toText(created) # " subnets")
+    };
+
+    // ===========================
+    // QUERY FUNCTIONS
+    // ===========================
+    
     public query func getSubnets() : async [SubnetInfo] {
-        Array.map<(Text, SubnetInfo), SubnetInfo>(
-            cachedSubnetsArray,
-            func((_, subnet)) { subnet }
-        )
+        Iter.toArray(subnets.vals())
     };
 
-    // CERTIFIED QUERY: Get specific subnet details
-    public query func getSubnetDetails(subnetId: Text) : async Result.Result<SubnetInfo, Text> {
-        for ((id, subnet) in cachedSubnetsArray.vals()) {
-            if (id == subnetId) {
-                return #ok(subnet);
-            };
-        };
-        #err("Subnet not found")
-    };
-
-    // CERTIFIED QUERY: Get certificate for verification
-    public query func getCertificate() : async ?Blob {
-        CertifiedData.getCertificate()
-    };
-
-    // CERTIFIED QUERY: Get the certified data hash
-    public query func getCertifiedDataHash() : async Blob {
-        createCertifiedDataHash()
-    };
-
-    // Combined data fetch with certificate (keep for backward compatibility)
-    public query func getStatsWithCertificate() : async {
-        stats: Result.Result<NetworkStats, Text>;
-        certificate: ?Blob;
-        dataHash: Blob;
-    } {
-        let statsResult = switch (cachedStatsData) {
-            case (?stats) {
-                #ok(stats)
-            };
-            case null {
-                var totalGen1 = 0;
-                var totalGen2 = 0;
-                var totalNodes = 0;
-                
-                for ((_, subnet) in cachedSubnetsArray.vals()) {
-                    totalGen1 += subnet.gen1Count;
-                    totalGen2 += subnet.gen2Count;
-                    totalNodes += subnet.nodeCount;
-                };
-                
-                #ok({
-                    totalSubnets = cachedSubnetsArray.size();
-                    totalNodes = totalNodes;
-                    totalGen1 = totalGen1;
-                    totalGen2 = totalGen2;
-                    lastUpdated = lastFetchTime;
-                })
-            };
-        };
-        
-        {
-            stats = statsResult;
-            certificate = CertifiedData.getCertificate();
-            dataHash = createCertifiedDataHash();
+    public query func getSubnetById(subnetId: Text) : async Result.Result<SubnetInfo, Text> {
+        switch (subnets.get(subnetId)) {
+            case (?subnet) { #ok(subnet) };
+            case null { #err("Subnet not found") };
         }
     };
 
-    // QUERY: Health check endpoint
+    public query func getNetworkStats() : async NetworkStats {
+        calculateStats()
+    };
+
     public query func healthCheck() : async {
         status: Text;
         subnetsCount: Nat;
-        nodesCount: Nat;
+        totalNodes: Nat;
+        gen1Nodes: Nat;
+        gen2Nodes: Nat;
+        unknownNodes: Nat;
         lastUpdated: Int;
-        hasCertificate: Bool;
-        availableCycles: Nat;
     } {
-        let nodeCount = switch (cachedStatsData) {
-            case (?stats) { stats.totalNodes };
-            case null { 0 };
-        };
-        
+        let stats = calculateStats();
         {
             status = "healthy";
-            subnetsCount = cachedSubnetsArray.size();
-            nodesCount = nodeCount;
-            lastUpdated = lastFetchTime;
-            hasCertificate = Option.isSome(CertifiedData.getCertificate());
-            availableCycles = Cycles.balance();
+            subnetsCount = stats.totalSubnets;
+            totalNodes = stats.totalNodes;
+            gen1Nodes = stats.gen1Nodes;
+            gen2Nodes = stats.gen2Nodes;
+            unknownNodes = stats.unknownNodes;
+            lastUpdated = lastUpdated;
         }
     };
 
-    // QUERY: Get data freshness info
-    public query func getDataFreshness() : async {
-        lastUpdated: Int;
-        ageInMinutes: Int;
-        isStale: Bool;
-        canRefresh: Bool;
-        nextRefreshAvailable: Int;
-    } {
-        let now = Time.now();
-        
-        if (lastFetchTime == 0) {
-            return {
-                lastUpdated = 0;
-                ageInMinutes = 0;
-                isStale = true;
-                canRefresh = true;
-                nextRefreshAvailable = now;
-            };
-        };
-        
-        let ageNs = now - lastFetchTime;
-        let ageMinutes = ageNs / 60_000_000_000;
-        let isStale = ageMinutes > 60;
-        let timeSinceRefresh = now - lastFetchTime;
-        let canRefresh = timeSinceRefresh >= REFRESH_COOLDOWN_NS;
-        let nextRefreshTime = lastFetchTime + REFRESH_COOLDOWN_NS;
-        
-        {
-            lastUpdated = lastFetchTime;
-            ageInMinutes = ageMinutes;
-            isStale = isStale;
-            canRefresh = canRefresh;
-            nextRefreshAvailable = if (canRefresh) { now } else { nextRefreshTime };
-        }
-    };
-
-    // ADMIN: Clear cache
-    public shared(msg) func clearCache() : async Result.Result<Text, Text> {
-        cachedSubnetsArray := [];
-        cachedStatsData := null;
-        lastFetchTime := 0;
-        lastRefreshBy := null;
-        updateCertifiedData();
-        #ok("Cache cleared successfully by " # Principal.toText(msg.caller))
-    };
-
-    // MAIN FUNCTION: Refresh network data
-    public shared(msg) func refreshNetworkData() : async Result.Result<Text, Text> {
-        // Rate limiting check
-        if (lastFetchTime > 0) {
-            let now = Time.now();
-            let timeSinceRefresh = now - lastFetchTime;
-            
-            if (timeSinceRefresh < REFRESH_COOLDOWN_NS) {
-                let minutesRemaining = (REFRESH_COOLDOWN_NS - timeSinceRefresh) / 60_000_000_000;
-                return #err("Rate limited: Please wait " # Int.toText(minutesRemaining) # " more minutes before refreshing");
-            };
-        };
-        
-        let now = Time.now();
-        
-        try {
-            Debug.print("Starting network data refresh by " # Principal.toText(msg.caller));
-
-            // Check cycles
-            let availableCycles = Cycles.balance();
-            Debug.print("Available cycles before refresh: " # Nat.toText(availableCycles));
-            
-            if (availableCycles < 500_000_000_000) {
-                return #err("Low cycles: " # Nat.toText(availableCycles) # ". Please top up canister.");
-            };
-
-            // Step 1: Fetch topology from IC Dashboard API
-            let topologyResult = await fetchOnChainTopology();
-            let topology = switch (topologyResult) {
-                case (#ok(data)) { data };
-                case (#err(msg)) { return #err("Failed to fetch topology: " # msg) };
-            };
-
-            // Step 2: Fetch node hardware info
-            let hardwareResult = await fetchNodeHardwareInfo();
-            let hardwareJsonText = switch (hardwareResult) {
-                case (#ok(text)) { text };
-                case (#err(msg)) { return #err("Failed to fetch hardware info: " # msg) };
-            };
-
-            // Step 3: Parse hardware data
-            Debug.print("Parsing hardware JSON...");
-            let nodeGenerationMap = HashMap.HashMap<Text, NodeGeneration>(0, Text.equal, Text.hash);
-
-            switch (Json.parse(hardwareJsonText)) {
-                case (#Ok(json)) {
-                    let nodesArrayOpt = switch (json) {
-                        case (#Object(obj)) { obj.get("nodes") };
-                        case _ { null };
-                    };
-
-                    switch (nodesArrayOpt) {
-                        case (? #Array(nodes)) {
-                            for (nodeJson in nodes.vals()) {
-                                switch (nodeJson) {
-                                    case (#Object(nodeObj)) {
-                                        let nodeIdOpt = nodeObj.get("node_id");
-                                        let chipIdOpt = nodeObj.get("chip_id");
-
-                                        switch (nodeIdOpt) {
-                                            case (? #Text(nodeIdText)) {
-                                                let generation = switch (chipIdOpt) {
-                                                    case (? #Text(chipId)) {
-                                                        if (isGen2ChipId(chipId)) {
-                                                            #Gen2
-                                                        } else {
-                                                            #Gen1
-                                                        }
-                                                    };
-                                                    case (_) { #Gen1 };
-                                                };
-                                                nodeGenerationMap.put(nodeIdText, generation);
-                                            };
-                                            case _ {};
-                                        };
-                                    };
-                                    case _ {};
-                                };
-                            };
-                        };
-                        case _ { return #err("Could not find 'nodes' array in hardware JSON") };
-                    };
-                };
-                case (#Err(msg)) { return #err("Failed to parse hardware JSON: " # msg) };
-            };
-            
-            Debug.print("Parsed " # Nat.toText(nodeGenerationMap.size()) # " nodes from hardware info");
-
-            // Step 4: Correlate topology with generation data
-            Debug.print("Correlating topology with hardware info...");
-            var parsedSubnetsBuffer = Buffer.Buffer<SubnetInfo>(topology.size());
-
-            for ((subnetId, nodeIds) in topology.vals()) {
-                var gen1Count : Nat = 0;
-                var gen2Count : Nat = 0;
-                var nodesBuffer = Buffer.Buffer<NodeInfo>(nodeIds.size());
-
-                for (nodeId in nodeIds.vals()) {
-                    let generation = Option.get(nodeGenerationMap.get(nodeId), #Gen1);
-
-                    if (generation == #Gen1) { gen1Count += 1 } else { gen2Count += 1 };
-
-                    nodesBuffer.add({
-                        nodeId = nodeId;
-                        generation = generation;
-                        dataCenter = null;
-                        nodeProvider = null;
-                    });
-                };
-
-                parsedSubnetsBuffer.add({
-                    subnetId = subnetId;
-                    nodeCount = nodeIds.size();
-                    gen1Count = gen1Count;
-                    gen2Count = gen2Count;
-                    nodes = Buffer.toArray(nodesBuffer);
-                    subnetType = null;
-                });
-            };
-            
-            let parsedSubnets = Buffer.toArray(parsedSubnetsBuffer);
-            Debug.print("Finished correlating data.");
-
-            // Step 5: Calculate statistics
-            var totalNodes : Nat = 0;
-            var totalGen1 : Nat = 0;
-            var totalGen2 : Nat = 0;
-
-            for (subnet in parsedSubnets.vals()) {
-                totalNodes += subnet.nodeCount;
-                totalGen1 += subnet.gen1Count;
-                totalGen2 += subnet.gen2Count;
-            };
-
-            let parsedStats : NetworkStats = {
-                totalSubnets = parsedSubnets.size();
-                totalNodes = totalNodes;
-                totalGen1 = totalGen1;
-                totalGen2 = totalGen2;
-                lastUpdated = now;
-            };
-
-            // Step 6: Store data
-            let buffer = Buffer.Buffer<(Text, SubnetInfo)>(parsedSubnets.size());
-            for (subnet in parsedSubnets.vals()) {
-                buffer.add((subnet.subnetId, subnet));
-            };
-            cachedSubnetsArray := Buffer.toArray(buffer);
-            
-            cachedStatsData := ?parsedStats;
-            lastFetchTime := parsedStats.lastUpdated;
-            lastRefreshBy := ?msg.caller;
-
-            // Update certified data
-            updateCertifiedData();
-
-            let cyclesRemaining = Cycles.balance();
-            Debug.print("Network data refreshed successfully. Cycles remaining: " # Nat.toText(cyclesRemaining));
-            
-            #ok("Refreshed successfully. Subnets: " # Nat.toText(parsedStats.totalSubnets) # 
-                ", Nodes: " # Nat.toText(parsedStats.totalNodes) # 
-                " (Gen1: " # Nat.toText(totalGen1) # ", Gen2: " # Nat.toText(totalGen2) # ")")
-        } catch (e) {
-            let errorMsg = "Failed during refreshNetworkData: " # Error.message(e);
-            Debug.print(errorMsg);
-            #err(errorMsg)
-        }
-    };
-
-    // System hooks
-    system func preupgrade() {
-        Debug.print("Preupgrade: Data is automatically persisted with persistent actor");
-    };
-
-    system func postupgrade() {
-        Debug.print("Postupgrade: Restoring certified data");
-        updateCertifiedData();
-    };
-
-    // HTTP handler
-    public query func http_request(request: HttpRequest) : async HttpResponse {
-        {
-            status_code = 200;
-            headers = [("Content-Type", "text/plain")];
-            body = Text.encodeUtf8("ICP Subnet Dashboard Backend - API is ready. Use the frontend canister to view the dashboard.");
-            streaming_strategy = null;
-        }
+    public shared func refreshData() : async Text {
+        subnets := HashMap.HashMap<Text, SubnetInfo>(10, Text.equal, Text.hash);
+        lastUpdated := Time.now();
+        "All data cleared successfully"
     };
 }
