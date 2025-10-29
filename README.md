@@ -1,4 +1,4 @@
-#Challenge Summary
+# Challenge Summary
 
 This project was part of the Decentralized ICP Subnet Dashboard challenge, which aimed to build a full-stack dApp on the Internet Computer that provides a real-time, certified view of the network’s topology and node distribution.
 
@@ -7,7 +7,7 @@ A key part of the challenge was to correctly classify nodes by hardware generati
 
 Since the on-chain registry uses protobuf encoding (which cannot be easily decoded in Motoko) and the DFINITY dashboard was temporarily broken, I instead relied on the official Internet Computer API. The node information was obtained directly from: 👉 https://ic-api.internetcomputer.org/api/v3/swagger -> https://ic-api.internetcomputer.org/api/v3/nodes
 
-#Expected Result
+# Expected Result
 
 The user must provide the node topology in JSON format, such as the output of the Internet Computer API, and upload it through the app interface.
 
