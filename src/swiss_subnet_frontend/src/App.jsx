@@ -115,9 +115,23 @@ function App() {
       setMessage(`Uploading ${processedNodes.length} nodes...`);
       
       const result = await actor.loadNodesFromFile(processedNodes);
-      
+
       if (result && 'ok' in result) {
         setMessage(result.ok);
+        
+        // Update certification after loading data
+        console.log("🔄 Updating certification...");
+        try {
+          await actor.updateCertification();
+          console.log("✅ Certification updated");
+
+          console.log("⏳ Waiting for certification to propagate (3s)...");
+          await new Promise(resolve => setTimeout(resolve, 3000)); ////////////////////////////////
+          console.log("✅ Ready to fetch certified data");
+        } catch (certErr) {
+          console.warn("⚠️ Failed to update certification:", certErr);
+        }
+        
         await loadDashboardData();
       } else if (result && 'err' in result) {
         setError(result.err);
@@ -277,7 +291,7 @@ function App() {
           <div className="header-controls">
             <input type="file" accept=".json" onChange={handleFileChange} style={{ display: 'none' }} id="file-upload" />
             <label htmlFor="file-upload" className="refresh-button" style={{ cursor: 'pointer' }}>
-              Select JSON File
+              Select Subnet and Node topology (JSON File)
             </label>
             
             <button className="refresh-button" onClick={handleUploadNodes} disabled={loading || !uploadFile}>

@@ -1,5 +1,6 @@
-import Array "mo:base/Array";
+import Blob "mo:base/Blob";
 import Buffer "mo:base/Buffer";
+import CertifiedData "mo:base/CertifiedData";
 import HashMap "mo:base/HashMap";
 import Int "mo:base/Int";
 import Iter "mo:base/Iter";
@@ -8,6 +9,8 @@ import Option "mo:base/Option";
 import Result "mo:base/Result";
 import Text "mo:base/Text";
 import Time "mo:base/Time";
+import SHA256 "mo:sha2/Sha256";
+// import Debug "mo:base/Debug"; 
 
 persistent actor SubnetDashboard {
     
@@ -55,6 +58,19 @@ persistent actor SubnetDashboard {
         subnet_id: Text;
     };
 
+    // Certificate types for certified queries
+    public type CertifiedNetworkStats = {
+        stats: NetworkStats;
+        certificate: ?Blob;
+        witness: Blob;
+    };
+
+    public type CertifiedSubnetInfo = {
+        subnet: ?SubnetInfo;
+        certificate: ?Blob;
+        witness: Blob;
+    };
+
     // ===========================
     // STORAGE
     // ===========================
@@ -64,6 +80,10 @@ persistent actor SubnetDashboard {
     private transient var subnets = HashMap.HashMap<Text, SubnetInfo>(10, Text.equal, Text.hash);
     private var lastUpdated : Int = 0;
     
+    // Store the last certified hash to ensure consistency
+    /////////////////////////////////////////// private var lastCertifiedStatsHash : Blob = Blob.fromArray([]);
+    private var lastCertifiedStats : ?NetworkStats = null;
+
     // ===========================
     // UPGRADE HOOKS
     // ===========================
@@ -79,6 +99,47 @@ persistent actor SubnetDashboard {
         };
         lastUpdated := lastUpdatedStable;
         subnetsStable := [];
+        
+        // Update certified data after upgrade
+        updateCertifiedData();
+    };
+
+    // ===========================
+    // CERTIFIED DATA MANAGEMENT
+    // ===========================
+
+    /// Compute hash of network stats for certification
+    /// Uses a simple but effective hashing approach for the data
+    private func computeStatsHash(stats: NetworkStats) : Blob {
+        let dataText = debug_show(stats);
+        let dataBlob = Text.encodeUtf8(dataText);
+        SHA256.fromBlob(#sha256, dataBlob); 
+    };
+
+    /// Compute hash of subnet info for certification
+    private func computeSubnetHash(subnet: SubnetInfo) : Blob {
+        let dataText = debug_show(subnet);
+        let dataBlob = Text.encodeUtf8(dataText);
+        SHA256.fromBlob(#sha256, dataBlob);  
+    };
+
+    /// Update the canister's certified data with current stats hash
+    // private func updateCertifiedData() {
+    //     let stats = calculateStats();
+    //     let hash = computeStatsHash(stats);
+    //     lastCertifiedStatsHash := hash; // Store it for later use
+    //     CertifiedData.set(hash);
+    // };
+    ///////////////////////////////////////////////////////////////////////////////
+    private func updateCertifiedData() {
+        let stats = calculateStats();
+        let hash = computeStatsHash(stats);
+
+        // Store the stats object itself for the certified query
+        lastCertifiedStats := ?stats; 
+
+        // Set the hash in the certified data tree
+        CertifiedData.set(hash);
     };
 
     // ===========================
@@ -209,11 +270,14 @@ persistent actor SubnetDashboard {
         
         lastUpdated := Time.now();
         
+        // Update certified data after loading nodes
+        updateCertifiedData();
+        
         #ok("Successfully loaded " # Nat.toText(processed) # " nodes across " # Nat.toText(created) # " subnets")
     };
 
     // ===========================
-    // QUERY FUNCTIONS
+    // QUERY FUNCTIONS (Regular)
     // ===========================
     
     public query func getSubnets() : async [SubnetInfo] {
@@ -239,6 +303,7 @@ persistent actor SubnetDashboard {
         gen2Nodes: Nat;
         unknownNodes: Nat;
         lastUpdated: Int;
+        hasCertificate: Bool;
     } {
         let stats = calculateStats();
         {
@@ -249,12 +314,141 @@ persistent actor SubnetDashboard {
             gen2Nodes = stats.gen2Nodes;
             unknownNodes = stats.unknownNodes;
             lastUpdated = lastUpdated;
+            hasCertificate = true;
         }
     };
+
+    // ===========================
+    // CERTIFIED QUERY FUNCTIONS
+    // ===========================
+
+    /// Get network stats with certificate
+    /// CRITICAL: The witness must be the SAME hash that was certified
+//    public query func getNetworkStatsCertified() : async CertifiedNetworkStats {
+//         Debug.print("🔍 getNetworkStatsCertified called");
+        
+//         let stats = calculateStats();
+//         Debug.print("📊 Stats calculated: " # debug_show(stats));
+        
+//         // Use the hash that was ALREADY certified during an update call
+//         let witness = lastCertifiedStatsHash;
+//         Debug.print("🔐 Using stored hash, length: " # Nat.toText(Blob.toArray(witness).size()));
+        
+//         // Get the certificate from the IC
+//         let cert = CertifiedData.getCertificate();
+//         Debug.print("📜 Certificate obtained: " # (if (Option.isSome(cert)) { "YES" } else { "NO" }));
+        
+//         {
+//             stats = stats;
+//             certificate = cert;
+//             witness = witness;
+//         }
+//     };
+public query func getNetworkStatsCertified() : async CertifiedNetworkStats {
+    // Debug.print("🔍 getNetworkStatsCertified called");
+
+    // Get the certificate from the IC
+    let cert = CertifiedData.getCertificate();
+    // Debug.print("🔍 Certificate obtained: " # (if (Option.isSome(cert)) { "YES" } else { "NO" }));
+
+    switch (lastCertifiedStats) {
+        case (?stats) {
+            // Use the *stored* stats from the last update
+            // Debug.print("Using stored stats: " # debug_show(stats));
+
+            // Re-compute the hash from the stored stats to use as the witness.
+            // This witness MUST match what was set in updateCertifiedData.
+            let witness = computeStatsHash(stats);
+            // Debug.print(" Computed witness from stored stats, length: " # Nat.toText(Blob.toArray(witness).size()));
+
+            {
+                stats = stats;
+                certificate = cert;
+                witness = witness;
+            }
+        };
+        case (null) {
+            // No data has been certified yet, return empty stats
+            // Debug.print("- No certified stats found.");
+            let emptyStats : NetworkStats = {
+                totalSubnets = 0;
+                totalNodes = 0;
+                gen1Nodes = 0;
+                gen2Nodes = 0;
+                unknownNodes = 0;
+                lastUpdated = 0;
+            };
+            let emptyHash = computeStatsHash(emptyStats);
+
+            {
+                stats = emptyStats;
+                certificate = cert;
+                witness = emptyHash;
+            }
+        };
+    }
+};
+
+    /// Get subnet info with certificate
+    public query func getSubnetByIdCertified(subnetId: Text) : async CertifiedSubnetInfo {
+        let subnetOpt = subnets.get(subnetId);
+        
+        let witness = switch (subnetOpt) {
+            case (?subnet) { computeSubnetHash(subnet) };
+            case null { 
+                // Return SHA-256 hash of empty string
+                SHA256.fromBlob(#sha256, Text.encodeUtf8(""));
+            };
+        };
+        
+        let cert = CertifiedData.getCertificate();
+        
+        {
+            subnet = subnetOpt;
+            certificate = cert;
+            witness = witness;
+        }
+    };
+
+    /// Get all subnets with certificate
+    public query func getSubnetsCertified() : async {
+        subnets: [SubnetInfo];
+        certificate: ?Blob;
+        witness: Blob;
+    } {
+        let subnetsArray = Iter.toArray(subnets.vals());
+        
+        // Compute SHA-256 hash of subnets count
+        let dataText = "subnets_count:" # Nat.toText(subnetsArray.size());
+        let witness = SHA256.fromBlob(#sha256, Text.encodeUtf8(dataText));
+        
+        let cert = CertifiedData.getCertificate();
+        
+        {
+            subnets = subnetsArray;
+            certificate = cert;
+            witness = witness;
+        }
+    };
+
+    // ===========================
+    // ADMIN FUNCTIONS
+    // ===========================
 
     public shared func refreshData() : async Text {
         subnets := HashMap.HashMap<Text, SubnetInfo>(10, Text.equal, Text.hash);
         lastUpdated := Time.now();
+        
+        // Update certified data after clearing
+        updateCertifiedData();
+        
         "All data cleared successfully"
     };
+
+    /// Manual function to update certified data (useful for testing)
+    public shared func updateCertification() : async Text {
+        updateCertifiedData();
+        "Certified data updated successfully"
+    };
+
 }
