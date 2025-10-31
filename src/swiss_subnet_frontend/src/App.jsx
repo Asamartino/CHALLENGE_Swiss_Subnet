@@ -457,7 +457,7 @@ function App() {
               )}
             
             <div className="top-summary">
-              <h2 className="top-summary-title">📊 Complete Subnet Overview</h2>
+              <h2 className="top-summary-title">📊 Complete Subnets Overview</h2>
               <div className="top-summary-grid">
                 <div className="top-summary-card total">
                   <div className="top-summary-icon">🔗</div>
@@ -493,7 +493,7 @@ function App() {
 
 
             <div className="subnets-section">
-              <h2 className="subnets-title">Real Subnets ({realSubnets.length})</h2>
+              <h2 className="subnets-title">Subnets({realSubnets.length})</h2>
               <div className="subnets-grid">
                 {realSubnets.map((subnet, index) => (
                   <button key={index} onClick={() => handleSubnetClick(subnet)}
