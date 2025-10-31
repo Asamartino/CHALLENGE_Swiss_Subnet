@@ -5,6 +5,7 @@ import './App.css';
 
 function App() {
   const [networkStats, setNetworkStats] = useState(null);
+  const [globalStats, setGlobalStats] = useState(null);
   const [subnets, setSubnets] = useState([]);
   const [selectedSubnet, setSelectedSubnet] = useState(null);
   const [loading, setLoading] = useState(false);
@@ -47,6 +48,7 @@ function App() {
     try {
       await actor.refreshData();
       setNetworkStats(null);
+      setGlobalStats(null);
       setSubnets([]);
       setSelectedSubnet(null);
       setCertificateStatus(null);
@@ -75,15 +77,14 @@ function App() {
     setError(null);
     
     try {
-      // Only show clearing message if data exists
       if (networkStats) {
         setMessage('Clearing old data...');
         await actor.refreshData();
         setNetworkStats(null);
+        setGlobalStats(null);
         setSubnets([]);
         setSelectedSubnet(null);
       } else {
-        // First time upload - just clear backend silently
         await actor.refreshData();
       }
       
@@ -92,24 +93,111 @@ function App() {
       const fileText = await uploadFile.text();
       const parsedData = JSON.parse(fileText);
       
-      // Get nodes array from either format
-      const nodes = parsedData.nodes || parsedData;
+      let processedNodes = [];
       
-      // Convert all fields to strings (no nulls)
-      const processedNodes = nodes
-        .filter(node => node.subnet_id) // Only nodes with subnet_id
-        .map(node => ({
-          node_id: node.node_id || "",
-          node_hardware_generation: node.node_hardware_generation || "",
-          node_operator_id: node.node_operator_id || "", 
-          node_provider_id: node.node_provider_id || "",
-          dc_id: node.dc_id || "",
-          region: node.region || "",
-          status: node.status || "",
-          subnet_id: node.subnet_id || ""
-        }));
+      // Check if this is topology.json format
+      if (parsedData.subnets && typeof parsedData.subnets === 'object') {
+        console.log('📡 Detected topology.json format');
+        setMessage('Converting topology format...');
+        
+        // 1. Process nodes in subnets
+        for (const [subnetId, subnetData] of Object.entries(parsedData.subnets)) {
+          if (subnetData.nodes && typeof subnetData.nodes === 'object') {
+            for (const [nodeId, nodeInfo] of Object.entries(subnetData.nodes)) {
+              processedNodes.push({
+                node_id: nodeId,
+                node_hardware_generation: nodeInfo.node_reward_type || "",
+                node_operator_id: nodeInfo.node_operator_id || "",
+                node_provider_id: nodeInfo.node_provider_id || "",
+                dc_id: nodeInfo.dc_id || "",
+                region: nodeInfo.dc_id || "",
+                status: "active",
+                subnet_id: subnetId
+              });
+            }
+          }
+        }
+        console.log(`✅ Processed ${processedNodes.length} nodes from subnets`);
+        
+        // 2. Process unassigned_nodes 
+        if (parsedData.unassigned_nodes && typeof parsedData.unassigned_nodes === 'object') {
+          const unassignedBefore = processedNodes.length;
+          
+          for (const [nodeId, nodeInfo] of Object.entries(parsedData.unassigned_nodes)) {
+            processedNodes.push({
+              node_id: nodeId,
+              node_hardware_generation: nodeInfo.node_reward_type || "",
+              node_operator_id: nodeInfo.node_operator_id || "",
+              node_provider_id: nodeInfo.node_provider_id || "",
+              dc_id: nodeInfo.dc_id || "",
+              region: nodeInfo.dc_id || "",
+              status: "unassigned",
+              subnet_id: "unassigned"
+            });
+          }
+          
+          const unassignedCount = processedNodes.length - unassignedBefore;
+          console.log(`✅ Processed ${unassignedCount} unassigned nodes`);
+        }
+        
+        // 3. Process api_boundary_nodes 
+        if (parsedData.api_boundary_nodes && Array.isArray(parsedData.api_boundary_nodes)) {
+          const apiBefore = processedNodes.length;
+          
+          for (const nodeId of parsedData.api_boundary_nodes) {
+            let foundInSubnets = false;
+            let foundInUnassigned = false;
+            
+            for (const [subnetId, subnetData] of Object.entries(parsedData.subnets)) {
+              if (subnetData.nodes && subnetData.nodes[nodeId]) {
+                foundInSubnets = true;
+                break;
+              }
+            }
+            
+            if (!foundInSubnets && parsedData.unassigned_nodes && parsedData.unassigned_nodes[nodeId]) {
+              foundInUnassigned = true;
+            }
+            
+            if (!foundInSubnets && !foundInUnassigned) {
+              processedNodes.push({
+                node_id: nodeId,
+                node_hardware_generation: "",
+                node_operator_id: "",
+                node_provider_id: "",
+                dc_id: "",
+                region: "",
+                status: "api_boundary",
+                subnet_id: "api_boundary"
+              });
+            }
+          }
+          
+          const apiCount = processedNodes.length - apiBefore;
+          console.log(`✅ Processed ${parsedData.api_boundary_nodes.length} API boundary node IDs (${apiCount} new)`);
+        }
+        
+        console.log(`✅ TOTAL: ${processedNodes.length} nodes from topology.json`);
+        
+      } else {
+        console.log('📡 Detected flat nodes format');
+        const nodes = parsedData.nodes || parsedData;
+        
+        processedNodes = nodes
+          .filter(node => node.subnet_id)
+          .map(node => ({
+            node_id: node.node_id || "",
+            node_hardware_generation: node.node_hardware_generation || "",
+            node_operator_id: node.node_operator_id || "", 
+            node_provider_id: node.node_provider_id || "",
+            dc_id: node.dc_id || "",
+            region: node.region || "",
+            status: node.status || "",
+            subnet_id: node.subnet_id || ""
+          }));
+      }
       
-      console.log(`Processing ${processedNodes.length} nodes`);
+      console.log(`Processing ${processedNodes.length} total nodes`);
       console.log("Sample node:", processedNodes[0]);
       
       setMessage(`Uploading ${processedNodes.length} nodes...`);
@@ -119,15 +207,11 @@ function App() {
       if (result && 'ok' in result) {
         setMessage(result.ok);
         
-        // Update certification after loading data
         console.log("🔄 Updating certification...");
         try {
           await actor.updateCertification();
           console.log("✅ Certification updated");
-
-          console.log("⏳ Waiting for certification to propagate (3s)...");
-          await new Promise(resolve => setTimeout(resolve, 3000)); ////////////////////////////////
-          console.log("✅ Ready to fetch certified data");
+          await new Promise(resolve => setTimeout(resolve, 3000));
         } catch (certErr) {
           console.warn("⚠️ Failed to update certification:", certErr);
         }
@@ -200,14 +284,22 @@ function App() {
       );
       setSubnets(sortedSubnets);
       
+      // Fetch global stats (all nodes including unassigned)
+      try {
+        const globalStatsData = await actor.getGlobalStats();
+        setGlobalStats(globalStatsData);
+        console.log("📊 Global stats loaded:", globalStatsData);
+      } catch (err) {
+        console.warn("Failed to fetch global stats:", err);
+      }
+      
       // Clear message after delay if not certificate status
       if (!certificateValid) {
         setTimeout(() => setMessage(''), 5000);
       }
-      
     } catch (err) {
-      console.error('Error loading data:', err);
-      setError('Failed to load: ' + getErrorMessage(err));
+      console.error('Error loading dashboard data:', err);
+      setError('Failed to load data: ' + getErrorMessage(err));
     } finally {
       setLoading(false);
     }
@@ -235,13 +327,24 @@ function App() {
     );
   }
 
-  const pieData = networkStats ? [
-    { name: 'Gen1', value: Number(networkStats.gen1Nodes), color: '#8b5cf6' },
-    { name: 'Gen2', value: Number(networkStats.gen2Nodes), color: '#06b6d4' },
-    { name: 'Unknown', value: Number(networkStats.unknownNodes), color: '#6b7280' },
+  // Filter out virtual subnets (unassigned, api_boundary) for stats and display
+  const realSubnets = subnets.filter(subnet => 
+    subnet.subnetId !== 'unassigned' && subnet.subnetId !== 'api_boundary'
+  );
+
+  const realSubnetStats = networkStats ? {
+    totalSubnets: realSubnets.length,
+    totalNodes: realSubnets.reduce((sum, s) => sum + Number(s.nodeCount), 0),
+    gen1Nodes: realSubnets.reduce((sum, s) => sum + Number(s.gen1Count), 0),
+    gen2Nodes: realSubnets.reduce((sum, s) => sum + Number(s.gen2Count), 0),
+  } : null;
+
+  const pieData = realSubnetStats ? [
+    { name: 'Gen1', value: realSubnetStats.gen1Nodes, color: '#8b5cf6' },
+    { name: 'Gen2', value: realSubnetStats.gen2Nodes, color: '#06b6d4' },
   ].filter(item => item.value > 0) : [];
 
-  const subnetChartData = subnets.slice(0, 10).map(subnet => ({
+  const subnetChartData = realSubnets.slice(0, 10).map(subnet => ({
     name: subnet.subnetId.substring(0, 8) + '...',
     Gen1: Number(subnet.gen1Count),
     Gen2: Number(subnet.gen2Count),
@@ -311,54 +414,88 @@ function App() {
           </div>
         </div>
 
-        {networkStats && (
+        {networkStats && realSubnetStats && (
           <>
-            <div className="stats-grid">
-              <StatsCard title="Subnets" value={networkStats.totalSubnets.toString()} color="#93c5fd" icon="🔗" />
-              <StatsCard title="Nodes" value={networkStats.totalNodes.toString()} color="#93c5fd" icon="🖥️" />
-              <StatsCard 
-                title="Gen1" 
-                value={networkStats.gen1Nodes.toString()} 
-                color="#c084fc" 
-                icon="📦"
-                percentage={networkStats.totalNodes > 0 ? ((Number(networkStats.gen1Nodes) / Number(networkStats.totalNodes)) * 100).toFixed(1) : 0}
-              />
-              <StatsCard 
-                title="Gen2" 
-                value={networkStats.gen2Nodes.toString()} 
-                color="#06b6d4" 
-                icon="⚡"
-                percentage={networkStats.totalNodes > 0 ? ((Number(networkStats.gen2Nodes) / Number(networkStats.totalNodes)) * 100).toFixed(1) : 0}
-              />
-              <StatsCard 
-                title="Unknown" 
-                value={networkStats.unknownNodes.toString()} 
-                color="#6b7280" 
-                icon="❓"
-                percentage={networkStats.totalNodes > 0 ? ((Number(networkStats.unknownNodes) / Number(networkStats.totalNodes)) * 100).toFixed(1) : 0}
-              />
+            {globalStats && (
+                <div className="top-summary">
+                  <h2 className="top-summary-title">🌐 Complete Nodes Overview</h2>
+                  <div className="top-summary-grid">
+                    <div className="top-summary-card total">
+                      <div className="top-summary-icon">🖥️</div>
+                      <div className="top-summary-label">Total Nodes</div>
+                      <div className="top-summary-value">{globalStats.totalNodes.toString()}</div>
+                    </div>
+                    
+                    <div className="top-summary-card gen1">
+                      <div className="top-summary-icon">📦</div>
+                      <div className="top-summary-label">Gen1 Nodes</div>
+                      <div className="top-summary-value">{globalStats.gen1Nodes.toString()}</div>
+                      <div className="top-summary-percentage">
+                        {globalStats.totalNodes > 0 ? ((Number(globalStats.gen1Nodes) / Number(globalStats.totalNodes)) * 100).toFixed(1) : 0}%
+                      </div>
+                    </div>
+                    
+                    <div className="top-summary-card gen2">
+                      <div className="top-summary-icon">⚡</div>
+                      <div className="top-summary-label">Gen2 Nodes</div>
+                      <div className="top-summary-value">{globalStats.gen2Nodes.toString()}</div>
+                      <div className="top-summary-percentage">
+                        {globalStats.totalNodes > 0 ? ((Number(globalStats.gen2Nodes) / Number(globalStats.totalNodes)) * 100).toFixed(1) : 0}%
+                      </div>
+                    </div>
+                    
+                    <div className="top-summary-card unknown">
+                      <div className="top-summary-icon">❓</div>
+                      <div className="top-summary-label">Unknown Nodes</div>
+                      <div className="top-summary-value">{globalStats.unknownNodes.toString()}</div>
+                      <div className="top-summary-percentage">
+                        {globalStats.totalNodes > 0 ? ((Number(globalStats.unknownNodes) / Number(globalStats.totalNodes)) * 100).toFixed(1) : 0}%
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              )}
+            
+            <div className="top-summary">
+              <h2 className="top-summary-title">📊 Complete Subnet Overview</h2>
+              <div className="top-summary-grid">
+                <div className="top-summary-card total">
+                  <div className="top-summary-icon">🔗</div>
+                  <div className="top-summary-label">Total Subnets</div>
+                  <div className="top-summary-value">{realSubnetStats.totalSubnets.toString()}</div>
+                </div>
+                
+                <div className="top-summary-card total">
+                  <div className="top-summary-icon">🖥️</div>
+                  <div className="top-summary-label">Total Nodes</div>
+                  <div className="top-summary-value">{realSubnetStats.totalNodes.toString()}</div>
+                </div>
+                
+                <div className="top-summary-card gen1">
+                  <div className="top-summary-icon">📦</div>
+                  <div className="top-summary-label">Gen1 Nodes</div>
+                  <div className="top-summary-value">{realSubnetStats.gen1Nodes.toString()}</div>
+                  <div className="top-summary-percentage">
+                    {realSubnetStats.totalNodes > 0 ? ((realSubnetStats.gen1Nodes / realSubnetStats.totalNodes) * 100).toFixed(1) : 0}%
+                  </div>
+                </div>
+                
+                <div className="top-summary-card gen2">
+                  <div className="top-summary-icon">⚡</div>
+                  <div className="top-summary-label">Gen2 Nodes</div>
+                  <div className="top-summary-value">{realSubnetStats.gen2Nodes.toString()}</div>
+                  <div className="top-summary-percentage">
+                    {realSubnetStats.totalNodes > 0 ? ((realSubnetStats.gen2Nodes / realSubnetStats.totalNodes) * 100).toFixed(1) : 0}%
+                  </div>
+                </div>
+              </div>
             </div>
 
-            <div className="charts-grid">
-              <ChartCard title="Node Distribution">
-                <ResponsiveContainer width="100%" height={300}>
-                  <PieChart>
-                    <Pie data={pieData} cx="50%" cy="50%" outerRadius={100} fill="#8884d8" dataKey="value"
-                         label={(entry) => `${entry.name}: ${entry.value}`}>
-                      {pieData.map((entry, index) => (
-                        <Cell key={`cell-${index}`} fill={entry.color} />
-                      ))}
-                    </Pie>
-                    <Tooltip />
-                  </PieChart>
-                </ResponsiveContainer>
-              </ChartCard>
-            </div>
 
             <div className="subnets-section">
-              <h2 className="subnets-title">Subnets ({subnets.length})</h2>
+              <h2 className="subnets-title">Real Subnets ({realSubnets.length})</h2>
               <div className="subnets-grid">
-                {subnets.map((subnet, index) => (
+                {realSubnets.map((subnet, index) => (
                   <button key={index} onClick={() => handleSubnetClick(subnet)}
                     className={`subnet-card ${selectedSubnet?.subnetId === subnet.subnetId ? 'selected' : ''}`}>
                     
@@ -375,7 +512,6 @@ function App() {
                     <div className="subnet-stats">
                       <span className="subnet-gen1">Gen1: {subnet.gen1Count.toString()}</span>
                       <span className="subnet-gen2">Gen2: {subnet.gen2Count.toString()}</span>
-                      <span style={{ color: '#9ca3af', fontWeight: 600 }}>Unknown: {subnet.unknownCount.toString()}</span>
                     </div>
                     <div className="subnet-total">Total: {subnet.nodeCount.toString()} nodes</div>
                   </button>
@@ -403,16 +539,12 @@ function App() {
                     <div className="details-stat-label">Gen2</div>
                     <div className="details-stat-value">{selectedSubnet.gen2Count.toString()}</div>
                   </div>
-                  <div>
-                    <div className="details-stat-label">Unknown</div>
-                    <div className="details-stat-value">{selectedSubnet.unknownCount.toString()}</div>
-                  </div>
                 </div>
                 <h3 className="details-nodes-title">Nodes ({selectedSubnet.nodes.length})</h3>
                 <div className="nodes-grid">
                   {selectedSubnet.nodes.map((node, index) => (
                     <div key={index} className="node-card">
-                      <div className="node-id">{node.nodeId.substring(0, 20)}...</div>
+                      <div className="node-id">{node.nodeId}</div>
                       <div className={`node-badge ${node.generation.toLowerCase()}`}>
                         {node.generation}
                       </div>

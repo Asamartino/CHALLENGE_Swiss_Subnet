@@ -240,6 +240,96 @@ body {
   animation: fadeIn 0.3s ease-in;
 }
 
+.top-summary {
+  background: linear-gradient(135deg, rgba(6, 182, 212, 0.2), rgba(16, 185, 129, 0.2));
+  backdrop-filter: blur(10px);
+  border-radius: 20px;
+  padding: 32px;
+  margin-bottom: 40px;
+  border: 2px solid rgba(6, 182, 212, 0.3);
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.1);
+}
+
+.top-summary-title {
+  font-size: 28px;
+  font-weight: bold;
+  margin-bottom: 24px;
+  text-align: center;
+  color: #fff;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+}
+
+.top-summary-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 20px;
+}
+
+.top-summary-card {
+  background: rgba(255, 255, 255, 0.1);
+  backdrop-filter: blur(10px);
+  border-radius: 12px;
+  padding: 24px;
+  text-align: center;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  transition: all 0.3s;
+}
+
+.top-summary-card:hover {
+  transform: translateY(-4px);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.2);
+  border-color: rgba(255, 255, 255, 0.4);
+}
+
+.top-summary-icon {
+  font-size: 48px;
+  margin-bottom: 12px;
+}
+
+.top-summary-label {
+  font-size: 14px;
+  color: #93c5fd;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  font-weight: 600;
+  margin-bottom: 8px;
+}
+
+.top-summary-value {
+  font-size: 48px;
+  font-weight: bold;
+  color: white;
+  line-height: 1;
+}
+
+.top-summary-percentage {
+  font-size: 18px;
+  color: #6ee7b7;
+  margin-top: 8px;
+  font-weight: 600;
+}
+
+.top-summary-card.gen1 {
+  border-color: rgba(192, 132, 252, 0.5);
+  background: rgba(192, 132, 252, 0.1);
+}
+
+.top-summary-card.gen2 {
+  border-color: rgba(6, 182, 212, 0.5);
+  background: rgba(6, 182, 212, 0.1);
+}
+
+.top-summary-card.total {
+  border-color: rgba(16, 185, 129, 0.5);
+  background: rgba(16, 185, 129, 0.1);
+}
+
+.top-summary-card.unknown {
+  border-color: rgba(107, 114, 128, 0.5);
+  background: rgba(107, 114, 128, 0.1);
+}
+
 /* Stats Grid */
 .stats-grid {
   display: grid;
@@ -519,10 +609,10 @@ body {
   font-family: 'Courier New', monospace;
   font-size: 11px;
   margin-bottom: 8px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  word-break: break-all;
+  white-space: normal;
   color: #d1d5db;
+  line-height: 1.4;
 }
 
 .node-badge {
@@ -645,6 +735,23 @@ body {
 
   .refresh-button {
     width: 100%;
+  }
+
+  /* Responsive Top Summary */
+  .top-summary {
+    padding: 20px;
+  }
+  
+  .top-summary-title {
+    font-size: 22px;
+  }
+  
+  .top-summary-value {
+    font-size: 36px;
+  }
+  
+  .top-summary-icon {
+    font-size: 36px;
   }
 }
 
