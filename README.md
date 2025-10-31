@@ -4,8 +4,7 @@ This project was part of the Decentralized ICP Subnet Dashboard challenge, which
 
 A key part of the challenge was to correctly classify nodes by hardware generation (Gen1 vs. Gen2). While subnet and node information can be retrieved on-chain, the hardware generation details are not part of the certified registry state.
 
-
-Since the on-chain registry uses protobuf encoding (which cannot be easily decoded in Motoko) and the DFINITY dashboard was temporarily broken, I instead relied on the official Internet Computer API. The node information was obtained directly from: 👉 https://ic-api.internetcomputer.org/api/v3/swagger -> https://ic-api.internetcomputer.org/api/v3/nodes
+Since the on-chain registry uses protobuf encoding (which cannot be easily decoded in Motoko) and the DFINITY dashboard was temporarily broken, I had to upload manualy the topology of the nodes and subnet (I relied on ic-admin)
 
 # Expected Result
 
