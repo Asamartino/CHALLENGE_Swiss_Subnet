@@ -9,15 +9,10 @@ Since the on-chain registry uses protobuf encoding (which cannot be easily decod
 
 # Expected Result
 
-The user must provide the node topology in JSON format, such as the output of the Internet Computer API, and upload it through the app interface.
+To proceed, please upload the node topology in JSON format. We recommend installing ic-admin and running: `ic-admin --nns-url https://ic0.app \ get-topology > topology.json`
 
 Once uploaded:
-
-The backend canister processes and stores the nodes, computing key statistics (total nodes, subnets, Gen1/Gen2/Unknown counts).
-
-It then updates a certified data hash, enabling cryptographic verification of frontend queries.
-
-The frontend dashboard automatically fetches this data, displays global statistics and charts, and allows the user to browse each subnet and view the nodes it contains.
-
-If the certification is valid, the interface shows
-✅ “Data cryptographically verified by the Internet Computer.”
+- The backend canister processes and stores the nodes, computing key statistics (total nodes, subnets, Gen1/Gen2/Unknown counts).
+- It then updates a certified data hash, enabling cryptographic verification of frontend queries.
+- The frontend dashboard automatically fetches this data, displays global statistics and charts, and allows the user to browse each subnet and view the nodes it contains.
+- If the certification is valid, the interface shows: ✅ “Data cryptographically verified by the Internet Computer.”
